@@ -385,6 +385,7 @@ class PianoScreen(Screen):
 
     def _auto_release(self, note_id: int) -> None:
         app: MultiPianoApp = self.app  # type: ignore
+        app.audio.stop_note(note_id)
         app.network.broadcast_note(note_id, 0, 0)
         self.app.call_from_thread(self._release_key_ui, note_id)
 
