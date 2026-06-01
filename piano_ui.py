@@ -147,6 +147,21 @@ class LobbyScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._wire_callbacks()
+
+    def on_screen_resume(self) -> None:
+        # Called when PianoScreen is popped and we return here.
+        # action_leave() may have created a new NetworkManager, so re-wire.
+        self._wire_callbacks()
+        # Rebuild the lobby list from whatever known_lobbies still contains
+        # (stale entries were already evicted by the network layer).
+        lv: ListView = self.query_one('#lobby-list', ListView)
+        lv.clear()
+        app: MultiPianoApp = self.app  # type: ignore
+        for info in app.network.known_lobbies.values():
+            self._add_lobby_item(info)
+
+    def _wire_callbacks(self) -> None:
         app: MultiPianoApp = self.app  # type: ignore
         app.network.on_lobby_discovered = self._on_lobby_found
         app.network.on_lobby_lost = self._on_lobby_lost

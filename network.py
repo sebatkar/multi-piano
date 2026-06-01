@@ -88,6 +88,8 @@ class NetworkManager:
 
         # Discovered lobbies: host_ip -> lobby info dict
         self.known_lobbies: dict[str, dict] = {}
+        self._lobby_last_seen: dict[str, float] = {}  # host_ip -> epoch seconds
+        self._LOBBY_TTL = 6.0  # seconds; host broadcasts every 2 s so 3 missed = gone
 
         self._lock = threading.Lock()
         self._running = False
@@ -118,8 +120,9 @@ class NetworkManager:
         self._running = True
         self._open_discovery_socket()
         self._open_note_socket()
-        threading.Thread(target=self._discovery_loop, daemon=True).start()
-        threading.Thread(target=self._note_recv_loop,  daemon=True).start()
+        threading.Thread(target=self._discovery_loop,     daemon=True).start()
+        threading.Thread(target=self._note_recv_loop,     daemon=True).start()
+        threading.Thread(target=self._lobby_cleanup_loop, daemon=True).start()
         # Broadcast DISCOVER so existing hosts reply immediately
         threading.Thread(target=self._send_discover, daemon=True).start()
 
@@ -168,6 +171,7 @@ class NetworkManager:
                 elif msg['type'] == 'LOBBY_REPLY' and sender_ip != self.local_ip:
                     with self._lock:
                         self.known_lobbies[sender_ip] = msg
+                        self._lobby_last_seen[sender_ip] = time.time()
                     if self.on_lobby_discovered:
                         self.on_lobby_discovered(msg)
 
@@ -191,6 +195,25 @@ class NetworkManager:
             self._disc_sock.sendto(data, dest)
         except Exception:
             pass
+
+    def _lobby_cleanup_loop(self) -> None:
+        """Periodically evict lobbies that stopped broadcasting (host gone)."""
+        while self._running:
+            time.sleep(3.0)
+            now = time.time()
+            with self._lock:
+                stale = [ip for ip, ts in self._lobby_last_seen.items()
+                         if now - ts > self._LOBBY_TTL]
+            for ip in stale:
+                self._evict_lobby(ip)
+
+    def _evict_lobby(self, host_ip: str) -> None:
+        """Remove a lobby from known_lobbies and fire on_lobby_lost."""
+        with self._lock:
+            self.known_lobbies.pop(host_ip, None)
+            self._lobby_last_seen.pop(host_ip, None)
+        if self.on_lobby_lost:
+            self.on_lobby_lost(host_ip)
 
     # ------------------------------------------------------------------ #
     #  Hosting                                                             #
@@ -305,6 +328,11 @@ class NetworkManager:
         while self._running:
             msg = _recv_json(self._tcp_cli)
             if msg is None:
+                # Host dropped — remove their lobby immediately so it doesn't
+                # reappear in the discovery list after returning to LobbyScreen.
+                host_ip = self.peer_ips[0] if self.peer_ips else None
+                if host_ip:
+                    self._evict_lobby(host_ip)
                 if self.on_disconnected:
                     self.on_disconnected()
                 break
