@@ -1,0 +1,71 @@
+# Multi-Piano multiplayer test setup
+#
+# USAGE — open a separate terminal window for each player:
+#
+#   Terminal 1:  docker compose run --rm player1
+#   Terminal 2:  docker compose run --rm player2
+#
+# Do NOT use "docker compose up -d" for TUI apps — detached mode has no TTY,
+# so Textual exits immediately and the container stops.
+#
+# Build once before the first run:
+#   docker compose build
+
+services:
+  player1:
+    build: .
+    container_name: piano-player1
+    hostname: player1
+    stdin_open: true
+    tty: true
+    devices:
+      - /dev/snd:/dev/snd        # share host ALSA hardware
+    group_add:
+      - audio                    # give container permission to use /dev/snd
+    environment:
+      - SDL_AUDIODRIVER=alsa
+    networks:
+      piano-net:
+        ipv4_address: 172.28.0.2
+
+  player2:
+    build: .
+    container_name: piano-player2
+    hostname: player2
+    stdin_open: true
+    tty: true
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    environment:
+      - SDL_AUDIODRIVER=alsa
+    networks:
+      piano-net:
+        ipv4_address: 172.28.0.3
+
+  # Uncomment to test with a third player:
+  # player3:
+  #   build: .
+  #   container_name: piano-player3
+  #   hostname: player3
+  #   stdin_open: true
+  #   tty: true
+  #   devices:
+  #     - /dev/snd:/dev/snd
+  #   group_add:
+  #     - audio
+  #   environment:
+  #     - SDL_AUDIODRIVER=alsa
+  #   networks:
+  #     piano-net:
+  #       ipv4_address: 172.28.0.4
+
+networks:
+  piano-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
