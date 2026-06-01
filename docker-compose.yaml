@@ -23,7 +23,10 @@ services:
     group_add:
       - audio                    # give container permission to use /dev/snd
     environment:
-      - SDL_AUDIODRIVER=alsa
+      - SDL_AUDIODRIVER=pulse
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+    volumes:
+      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
     networks:
       piano-net:
         ipv4_address: 172.28.0.2
@@ -39,7 +42,10 @@ services:
     group_add:
       - audio
     environment:
-      - SDL_AUDIODRIVER=alsa
+      - SDL_AUDIODRIVER=pulse
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+    volumes:
+      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
     networks:
       piano-net:
         ipv4_address: 172.28.0.3
