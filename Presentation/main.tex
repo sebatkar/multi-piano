@@ -78,14 +78,14 @@
 \vspace{0.4cm}
 \begin{itemize}
     \item Multiple players on the same network discover, host, and join lobbies.
-    \item Notes are transmitted in near real time and played back with synchronized audio.
+    \item Notes are transmitted in near real time and played back with \textbf{clock-synchronised} audio.
     \item No external sound assets: piano tones are synthesized procedurally at build or first run.
+    \item A 13-key one-octave keyboard (C4--C5) is rendered as an ASCII piano in the terminal.
 \end{itemize}
 
 \vspace{0.3cm}
-\textbf{Goal:} demonstrate a lightweight multiplayer prototype combining discovery, mixed protocols, jitter-buffered audio, and a full TUI.
+\textbf{Goal:} demonstrate a lightweight multiplayer prototype combining discovery, mixed protocols, NTP-style clock sync, scheduled playout, and a full TUI.
 \end{frame}
-
 
 \begin{frame}{System Architecture}
 \begin{center}
@@ -95,16 +95,23 @@
 ]
     \node[box] (main) at (0,2.4) {\texttt{main.py}\\Bootstrap};
     \node[box] (ui) at (0,1.2) {\texttt{piano\_ui.py}\\Textual TUI};
-    \node[box] (net) at (-2.6,0) {\texttt{network.py}\\Discovery \& Streaming};
+    \node[box] (net) at (-2.6,0) {\texttt{network.py}\\Discovery, Sync \& Notes};
     \node[box] (audio) at (2.6,0) {\texttt{audio.py}\\Playback \& Jitter};
     \node[box] (gen) at (0,-1.2) {\texttt{generate\_sounds.py}\\WAV Synthesis};
 
     \draw[arr] (main) -- (ui);
     \draw[arr] (ui) -- (net);
     \draw[arr] (ui) -- (audio);
+    \draw[arr] (main) -- (gen);
     \draw[arr] (audio) -- (gen);
 \end{tikzpicture}
 \end{center}
+
+\vspace{0.2cm}
+\begin{itemize}
+    \item \texttt{MultiPianoApp} owns \texttt{AudioEngine}, \texttt{NetworkManager}, and \texttt{JitterBuffer}.
+    \item Network I/O runs on daemon threads; UI updates use \texttt{call\_from\_thread()}.
+\end{itemize}
 \end{frame}
 
 \begin{frame}{Networking — Three Channels}
@@ -120,7 +127,7 @@ We separate concerns into three network channels:
 \midrule
 12488 & UDP & JSON & Lobby discovery (broadcast) \\
 12487 & TCP & length-prefixed JSON & Lobby management \\
-12489 & UDP & 15-byte binary struct & Real-time note events \\
+12489 & UDP & binary + JSON & Note events \& clock sync \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -128,11 +135,10 @@ We separate concerns into three network channels:
 \vspace{0.3cm}
 \begin{itemize}
     \item \textbf{Discovery} finds open sessions without prior configuration.
-    \item \textbf{TCP} maintains player membership and state synchronization.
-    \item \textbf{UDP notes} minimize latency for press/release events.
+    \item \textbf{TCP} maintains player membership and state synchronisation.
+    \item \textbf{UDP 12489} carries 15-byte note packets and NTP-style \texttt{SYNC\_REQ}/\texttt{SYNC\_ACK} messages.
 \end{itemize}
 \end{frame}
-
 
 \begin{frame}{Lobby Discovery (UDP 12488)}
 \textbf{Client behaviour:}
@@ -152,11 +158,8 @@ We separate concerns into three network channels:
 \textbf{Stale lobby eviction:} entries expire after 6 seconds without a reply (cleanup every 3 s).
 \end{frame}
 
-
-
-
-
 \begin{frame}{Lobby Management (TCP 12487)}
+All TCP messages use a \textbf{4-byte big-endian length prefix} followed by UTF-8 JSON.
 
 \vspace{0.3cm}
 \textbf{Join flow:}
@@ -165,34 +168,83 @@ We separate concerns into three network channels:
     \item Client sends \texttt{\{"type": "JOIN", "SENDER\_NAME": ..., "SENDER\_IP": ...\}}.
     \item Host accepts, stores the socket, and appends the client IP to \texttt{peer\_ips}.
     \item Host broadcasts \texttt{STATE\_UPDATE} with the current player list to all clients.
+    \item Both sides start a clock-sync loop (every 5 s) over UDP 12489.
 \end{enumerate}
 
 \vspace{0.3cm}
 Disconnect is detected via TCP EOF; the lobby list is updated and the UI is notified.
 \end{frame}
 
+\begin{frame}{Note Streaming \& Clock Synchronisation}
+\textbf{Note packets} (15 bytes, little-endian):
+\small\texttt{seq | play\_at (float64) | note\_id | action | velocity}
 
-
-
-
-\begin{frame}{Audio — Playback \& Jitter Buffer}
-\textbf{AudioEngine} (pygame mixer):
+\vspace{0.3cm}
+\textbf{Sender scheduling:}
 \begin{itemize}
-    \item 32 channels; per-note volume scaled by \texttt{velocity / 100 * 0.8}.
-    \item 200 ms fadeout on note release; watchdog stops notes held longer than 3 s.
-    \item Graceful fallback: app continues silently if mixer init fails.
+    \item On key press, stamp \texttt{play\_at = time.time() + 30\,ms}.
+    \item Local and remote playback both target this absolute time.
+\end{itemize}
+
+\vspace{0.3cm}
+\textbf{NTP-style clock sync} (JSON on UDP 12489):
+\begin{itemize}
+    \item \texttt{SYNC\_REQ} carries $t_1$; \texttt{SYNC\_ACK} returns $t_1, t_2, t_3$.
+    \item Offset: $\text{offset} = \dfrac{(t_2 - t_1) + (t_3 - t_4)}{2}$ (peer clock $-$ local clock).
+    \item Receiver converts: \texttt{local\_play\_at = play\_at $-$ offset}.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Audio — Scheduled Playback \& Jitter Buffer}
+\textbf{Local playback:}
+\begin{itemize}
+    \item Key press schedules \texttt{play\_note} and broadcast after \textbf{30 ms} (\texttt{PLAYOUT\_DELAY}).
+    \item Release uses the same delay so local and remote notes stay aligned.
 \end{itemize}
 
 \vspace{0.3cm}
 \textbf{JitterBuffer} for remote notes:
 \begin{itemize}
-    \item Fixed \textbf{30 ms playout delay} from packet timestamp.
-    \item Drops packets older than 500 ms on arrival.
-    \item Sequence-number deduplication handles UDP duplicates.
+    \item Priority queue keyed by a \textbf{monotonic deadline} (immune to wall-clock steps).
+    \item Waits until the sender-scheduled play time, then plays or stops the note.
+    \item Deduplicates by \texttt{(sender\_ip, seq)}; drops events more than 200 ms overdue.
+    \item Before first sync, offset is 0 --- notes play $\sim$30 ms after arrival (graceful fallback).
 \end{itemize}
+
+\vspace{0.3cm}
+\textbf{AudioEngine:} pygame mixer, 32 channels, 200 ms fadeout, 3 s stuck-note watchdog.
 \end{frame}
 
+\begin{frame}{User Interface}
+\textbf{LobbyScreen:} player name, lobby name, host/join/refresh, discovered-lobby list.
 
+\vspace{0.3cm}
+\textbf{PianoScreen:} ASCII piano with box-drawing borders, player sidebar, activity log.
+
+\vspace{0.3cm}
+\textbf{Keyboard mapping:} \texttt{a s d f g h j k} (white keys), \texttt{w e t y u} (black keys).
+
+\vspace{0.3cm}
+\textbf{Input model:} Textual has no key-up events --- 500 ms timer auto-releases each note; key-repeat is debounced. Remote presses flash for 400 ms.
+\end{frame}
+
+\begin{frame}{Docker Deployment}
+docker-compose provides a two-player LAN test environment:
+
+\vspace{0.3cm}
+\begin{itemize}
+    \item Base image: \texttt{python:3.12-slim} with SDL2 runtime libraries.
+    \item Custom bridge network \texttt{172.28.0.0/24} with fixed container IPs.
+    \item Sounds pre-generated at image build time for instant startup.
+    \item Requires \texttt{stdin\_open: true} and \texttt{tty: true} --- TUI apps cannot run detached.
+\end{itemize}
+
+\vspace{0.3cm}
+\small
+\texttt{docker compose build}\\
+\texttt{docker compose run --rm player1} \textit{(terminal 1)}\\
+\texttt{docker compose run --rm player2} \textit{(terminal 2)}
+\end{frame}
 
 \begin{frame}{Limitations \& Future Work}
 \textbf{Current limitations:}
@@ -222,8 +274,8 @@ Disconnect is detected via TCP EOF; the lobby list is updated and the UI is noti
     \textbf{Ömer Faruk Erzurumluoğlu} \\
     \textbf{Muhammet Berkay Keskin} \\
     \vspace{0.3cm}
-    \href{mailto:omer.erzurumluoglu@std.bogazici.edu.tr}{omer.erzurumluoglu@std.bogazici.edu.tr}
-    {muhammet.keskin@std.bogazici.edu.tr}
+    \href{mailto:omer.erzurumluoglu@std.bogazici.edu.tr}{omer.erzurumluoglu@std.bogazici.edu.tr}\\
+    \href{mailto:muhammet.keskin@std.bogazici.edu.tr}{muhammet.keskin@std.bogazici.edu.tr}
 \end{frame}
 
 \end{document}
