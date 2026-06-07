@@ -37,52 +37,65 @@ def _esc(key: str) -> str:
 
 
 def _render_piano(pressed: set[int]) -> str:
-    """Return a multi-line ASCII piano string with pressed keys highlighted."""
-    col_w = 7
+    """Return a multi-line ASCII piano with pressed keys highlighted.
 
-    # Black-key top row aligned over white-key columns.
-    # black_at_white: white-key column index → (note_id, keyboard_key)
-    black_at_white = {0: (1, 'w'), 1: (3, 'e'), 3: (6, 't'), 4: (8, 'y'), 5: (10, 'u')}
+    Layout (65 chars wide):
+    ┌─────┬───┬───┬───┬─────┬─────┬───┬───┬───┬───┬───┬─────┬───────┐
+    │     │   │   │   │     │     │   │   │   │   │   │     │       │
+    │     │   │   │   │     │     │   │   │   │   │   │     │       │
+    │     │[w]│   │[e]│     │     │[t]│   │[y]│   │[u]│     │       │
+    │     └─┬─┘   └─┬─┘     │     └─┬─┘   └─┬─┘   └─┬─┘     │       │
+    │  [a]  │  [s]  │  [d]  │  [f]  │  [g]  │  [h]  │  [j]  │  [k]  │
+    │  C4   │  D4   │  E4   │  F4   │  G4   │  A4   │  B4   │  C5   │
+    └───────┴───────┴───────┴───────┴───────┴───────┴───────┴───────┘
+    """
+    # ── Black-key section (rows 0–4) ──────────────────────────────────────
+    # The 65-char rows 0–3 consist of 13 content segments separated by 14 dividers.
+    # Segment content widths: [5,3,3,3,5, 5,3,3,3,3,3, 5, 7]
+    # Segments 1,3,6,8,10 are the interiors of the five black keys.
+    BK_SEG_MAP = {1: (1, 'w'), 3: (3, 'e'), 6: (6, 't'), 8: (8, 'y'), 10: (10, 'u')}
+    BK_WIDTHS  = [5, 3, 3, 3, 5, 5, 3, 3, 3, 3, 3, 5, 7]
 
-    top_line = ''
-    for wi in range(8):
-        if wi in black_at_white:
-            nid, key = black_at_white[wi]
-            cell = _esc(key).center(4)
-            if nid in pressed:
-                top_line += '   ' + f'[reverse]{cell}[/reverse]' + '  '
-            else:
-                top_line += '   ' + cell + '  '
-        else:
-            top_line += '       '
+    body_segs  = [' ' * w for w in BK_WIDTHS]
+    label_segs = list(body_segs)
+    for idx, (_, k) in BK_SEG_MAP.items():
+        label_segs[idx] = _esc(k)   # '\[x]' = 4 Python chars, renders as '[x]' = 3 visible
 
-    white_row = ''
-    for nid, key in WHITE_KEYS:
-        # 2 spaces + escaped key (3 visible) + 2 spaces = 7 visible chars = col_w
-        cell = f'  {_esc(key)}  '
-        if nid in pressed:
-            white_row += f'│[reverse]{cell}[/reverse]'
-        else:
-            white_row += f'│{cell}'
-    white_row += '│'
+    def _bk_seg(i, content):
+        if i in BK_SEG_MAP and BK_SEG_MAP[i][0] in pressed:
+            return f'[reverse]{content}[/reverse]'
+        return content
 
-    note_row = ''
-    for nid, key in WHITE_KEYS:
-        cell = NOTE_LABELS[nid].center(col_w)
-        if nid in pressed:
-            note_row += f'│[reverse]{cell}[/reverse]'
-        else:
-            note_row += f'│{cell}'
-    note_row += '│'
+    def _bk_row(segs, left='│', sep='│', right='│'):
+        parts = [left]
+        for i, s in enumerate(segs):
+            parts.append(_bk_seg(i, s))
+            parts.append(right if i == len(segs) - 1 else sep)
+        return ''.join(parts)
 
-    inner = '─' * (8 * (col_w + 1) - 1)
-    return (
-        f'{top_line}\n'
-        f'┌{inner}┐\n'
-        f'{white_row}\n'
-        f'{note_row}\n'
-        f'└{inner}┘'
-    )
+    # ── White-key section (rows 5–7) ──────────────────────────────────────
+    # 8 segments of 7 visible chars each, separated by │.
+    # '  ' + _esc(k) + '  '  →  8 Python chars, 7 visible  (2 + [x] + 2)
+    key_cells  = ['  ' + _esc(k) + '  ' for _, k in WHITE_KEYS]
+    note_cells = [NOTE_LABELS[nid].center(7) for nid, _ in WHITE_KEYS]
+
+    def _wk_row(cells):
+        parts = []
+        for (nid, _), cell in zip(WHITE_KEYS, cells):
+            parts.append(f'│[reverse]{cell}[/reverse]' if nid in pressed else f'│{cell}')
+        parts.append('│')
+        return ''.join(parts)
+
+    return '\n'.join([
+        _bk_row(['─' * w for w in BK_WIDTHS], left='┌', sep='┬', right='┐'),
+        _bk_row(body_segs),
+        _bk_row(body_segs),
+        _bk_row(label_segs),
+        '│     └─┬─┘   └─┬─┘     │     └─┬─┘   └─┬─┘   └─┬─┘     │       │',
+        _wk_row(key_cells),
+        _wk_row(note_cells),
+        '└───────┴───────┴───────┴───────┴───────┴───────┴───────┴───────┘',
+    ])
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
