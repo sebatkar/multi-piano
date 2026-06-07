@@ -49,7 +49,7 @@
 % --- Info ---
 \title[Multi-Piano]{Multi-Piano: LAN Multiplayer Terminal Piano}
 \subtitle{CMPE487}
-\author{Ömer Faruk Erzurumluoğlu \and Muhammet Berkay Keskin}
+\author{Ömer Faruk Erzurumluoğlu \and Berkay Keskin}
 \institute[]{Department of Computer Engineering}
 \date{June 2026}
 
@@ -79,8 +79,6 @@
 \begin{itemize}
     \item Multiple players on the same network discover, host, and join lobbies.
     \item Notes are transmitted in near real time and played back with \textbf{clock-synchronised} audio.
-    \item No external sound assets: piano tones are synthesized procedurally at build or first run.
-    \item A 13-key one-octave keyboard (C4--C5) is rendered as an ASCII piano in the terminal.
 \end{itemize}
 
 \vspace{0.3cm}
@@ -102,16 +100,9 @@
     \draw[arr] (main) -- (ui);
     \draw[arr] (ui) -- (net);
     \draw[arr] (ui) -- (audio);
-    \draw[arr] (main) -- (gen);
     \draw[arr] (audio) -- (gen);
 \end{tikzpicture}
 \end{center}
-
-\vspace{0.2cm}
-\begin{itemize}
-    \item \texttt{MultiPianoApp} owns \texttt{AudioEngine}, \texttt{NetworkManager}, and \texttt{NoteScheduler}.
-    \item Network I/O runs on daemon threads; UI updates use \texttt{call\_from\_thread()}.
-\end{itemize}
 \end{frame}
 
 \begin{frame}{Networking — Three Channels}
@@ -143,7 +134,7 @@ We separate concerns into three network channels:
 \begin{frame}{Lobby Discovery (UDP 12488)}
 \textbf{Client behaviour:}
 \begin{itemize}
-    \item Binds UDP port 12488 with \texttt{SO\_BROADCAST} and \texttt{SO\_REUSEADDR}.
+    \item Binds UDP port 12488.
     \item Sends \texttt{DISCOVER} broadcasts; listens for \texttt{LOBBY\_REPLY} responses.
 \end{itemize}
 
@@ -151,15 +142,11 @@ We separate concerns into three network channels:
 \textbf{Host behaviour:}
 \begin{itemize}
     \item Replies to discoverers with lobby name, host IP, TCP port, and active player count.
-    \item Re-broadcasts \texttt{LOBBY\_REPLY} every 2 seconds.
 \end{itemize}
 
-\vspace{0.3cm}
-\textbf{Stale lobby eviction:} entries expire after 6 seconds without a reply (cleanup every 3 s).
 \end{frame}
 
 \begin{frame}{Lobby Management (TCP 12487)}
-All TCP messages use a \textbf{4-byte big-endian length prefix} followed by UTF-8 JSON.
 
 \vspace{0.3cm}
 \textbf{Join flow:}
@@ -171,95 +158,61 @@ All TCP messages use a \textbf{4-byte big-endian length prefix} followed by UTF-
     \item Both sides start a clock-sync loop (every 5 s) over UDP 12489.
 \end{enumerate}
 
-\vspace{0.3cm}
-Disconnect is detected via TCP EOF; the lobby list is updated and the UI is notified.
 \end{frame}
 
-\begin{frame}{Note Streaming \& Clock Synchronisation}
-\textbf{Note packets} (15 bytes, little-endian):
-\small\texttt{seq | play\_at (float64) | note\_id | action | velocity}
+\begin{frame}{Clock Synchronisation}
+\vspace{-0.5cm}  
+\textbf{NTP-style exchange} (JSON on UDP 12489, every 5\,s):
 
-\vspace{0.3cm}
-\textbf{Sender scheduling:}
-\begin{itemize}
-    \item On key press, stamp \texttt{play\_at = time.time() + 30\,ms}.
-    \item Local and remote playback both target this absolute time.
-\end{itemize}
-
-\vspace{0.3cm}
-\textbf{NTP-style clock sync} (JSON on UDP 12489):
-\begin{itemize}
-    \item \texttt{SYNC\_REQ} carries $t_1$; \texttt{SYNC\_ACK} returns $t_1, t_2, t_3$.
-    \item Offset: $\text{offset} = \dfrac{(t_2 - t_1) + (t_3 - t_4)}{2}$ (peer clock $-$ local clock).
-    \item Receiver converts: \texttt{local\_play\_at = play\_at $-$ offset}.
-\end{itemize}
-\end{frame}
-
-\begin{frame}{Audio — Scheduled Playback}
-\textbf{Local playback:}
-\begin{itemize}
-    \item Key press schedules \texttt{play\_note} and broadcast after \textbf{30 ms} (\texttt{PLAYOUT\_DELAY}).
-    \item Release uses the same delay so local and remote notes stay aligned.
-\end{itemize}
-
-\vspace{0.3cm}
-\textbf{NoteScheduler} for remote notes:
-\begin{itemize}
-    \item Priority queue keyed by a \textbf{monotonic deadline} (immune to wall-clock steps).
-    \item Waits until the sender-scheduled play time, then plays or stops the note.
-    \item Deduplicates by \texttt{(sender\_ip, seq)}; drops events more than 200 ms overdue.
-    \item Before first sync, offset is 0 --- notes play $\sim$30 ms after arrival (graceful fallback).
-\end{itemize}
-
-\vspace{0.3cm}
-\textbf{AudioEngine:} pygame mixer, 32 channels, 200 ms fadeout, 3 s stuck-note watchdog.
-\end{frame}
-
-\begin{frame}{User Interface}
-\textbf{LobbyScreen:} player name, lobby name, host/join/refresh, discovered-lobby list.
-
-\vspace{0.3cm}
-\textbf{PianoScreen:} ASCII piano with box-drawing borders, player sidebar, activity log.
-
-\vspace{0.3cm}
-\textbf{Keyboard mapping:} \texttt{a s d f g h j k} (white keys), \texttt{w e t y u} (black keys).
-
-\vspace{0.3cm}
-\textbf{Input model:} Textual has no key-up events --- 500 ms timer auto-releases each note; key-repeat is debounced. Remote presses flash for 400 ms.
-\end{frame}
-
-\begin{frame}{Docker Deployment}
-docker-compose provides a two-player LAN test environment:
-
-\vspace{0.3cm}
-\begin{itemize}
-    \item Base image: \texttt{python:3.12-slim} with SDL2 runtime libraries.
-    \item Custom bridge network \texttt{172.28.0.0/24} with fixed container IPs.
-    \item Sounds pre-generated at image build time for instant startup.
-    \item Requires \texttt{stdin\_open: true} and \texttt{tty: true} --- TUI apps cannot run detached.
-\end{itemize}
-
-\vspace{0.3cm}
+\vspace{0.2cm}
+\begin{center}
 \small
-\texttt{docker compose build}\\
-\texttt{docker compose run --rm player1} \textit{(terminal 1)}\\
-\texttt{docker compose run --rm player2} \textit{(terminal 2)}
+\begin{tabular}{rcl}
+    Peer A & & Peer B \\
+    $t_1 = \texttt{time.time()}$ & & \\
+    & $\xrightarrow{\texttt{SYNC\_REQ}\{t_1\}}$ & \\
+    & & $t_2 = \texttt{time.time()}$ \\
+    & & $t_3 = \texttt{time.time()}$ \\
+    & $\xleftarrow{\texttt{SYNC\_ACK}\{t_1,t_2,t_3\}}$ & \\
+    $t_4 = \texttt{time.time()}$ & & \\
+\end{tabular}
+\end{center}
+
+\vspace{0.3cm}
+\textbf{Offset calculation} (peer clock $-$ local clock):
+\[
+    \text{offset} = \frac{(t_2 - t_1) + (t_3 - t_4)}{2}
+\]
+
+\begin{itemize}
+    \item Trip delays cancel; result is the pure clock difference.
+    \item Both sides sync with each other; host syncs with every guest.
+    \item Receiver converts a sender timestamp.
+\end{itemize}
 \end{frame}
 
-\begin{frame}{Limitations \& Future Work}
-\textbf{Current limitations:}
+\begin{frame}{Note Streaming \& Scheduled Playback}
+\vspace{-0.5cm}
+\textbf{Note packet} (15 bytes, little-endian, UDP 12489):
+
+\vspace{0.1cm}
+\small\texttt{seq (u32) $|$ play\_at (f64) $|$ note\_id (u8) $|$ action (u8) $|$ velocity (u8)}
+
+\normalsize
+\vspace{0.3cm}
+\textbf{Sender} (on key press):
 \begin{itemize}
-    \item Hub topology: guests hear the host, but \textbf{not each other}.
-    \item LAN-only discovery; no Internet/WAN support or NAT traversal.
-    \item Fixed 500 ms auto-release approximates note-off rather than true key-up.
-    \item Single octave (13 keys); no sustain pedal or velocity from key pressure.
+    \item Computes \texttt{play\_at = time.time$()$ + 30\,ms} and fires a local \texttt{Timer} for own audio.
+    \item Broadcasts the packet with \texttt{play\_at} embedded so every peer targets the same instant.
 \end{itemize}
 
 \vspace{0.3cm}
-\textbf{Possible extensions:}
+\textbf{Receiver — NoteScheduler}:
 \begin{itemize}
-    \item Full-mesh or host-relay note forwarding for guest-to-guest audio.
-    \item Wider keyboard range, MIDI input, and configurable instrument sounds.
+    \item Converts: \texttt{local\_play\_at = play\_at $-$ offset}.
+    \item Inserts into a \textbf{monotonic priority queue}.
+    \item Background thread sleeps until \texttt{local\_play\_at}, then plays the note.
+    \item Events more than 200\,ms overdue are discarded.
 \end{itemize}
 \end{frame}
 
