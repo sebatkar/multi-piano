@@ -9,7 +9,6 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 import pygame
 
 PLAYOUT_DELAY = 0.030  # 30 ms
-LATE_THRESHOLD = 0.500  # discard packets older than 500 ms
 STUCK_NOTE_TIMEOUT = 3.0  # force-stop notes held > 3 s
 
 NOTE_NAMES = ['C4', 'Cs4', 'D4', 'Ds4', 'E4', 'F4', 'Fs4', 'G4', 'Gs4', 'A4', 'As4', 'B4', 'C5']
@@ -102,7 +101,7 @@ class JitterBuffer:
         self._audio = audio
         self._delay = playout_delay
         self._queue: PriorityQueue = PriorityQueue()
-        self._seen: set[int] = set()
+        self._seen: set[tuple[str, int]] = set()
         self._running = False
 
     def start(self) -> None:
@@ -112,14 +111,15 @@ class JitterBuffer:
     def stop(self) -> None:
         self._running = False
 
-    def push(self, seq: int, timestamp: float,
-             note_id: int, action: int, velocity: int) -> None:
-        if time.time() - timestamp > LATE_THRESHOLD:
-            return  # already too late
-        if seq in self._seen:
+    def push(self, seq: int, _timestamp: float,
+             note_id: int, action: int, velocity: int,
+             sender_id: str = '') -> None:
+        key = (sender_id, seq)
+        if key in self._seen:
             return  # duplicate
-        playout_at = timestamp + self._delay
-        self._queue.put((playout_at, seq, note_id, action, velocity))
+        # Remote wall clocks are not synchronized, so schedule from local arrival time.
+        playout_at = time.monotonic() + self._delay
+        self._queue.put((playout_at, key, note_id, action, velocity))
 
     def _consumer(self) -> None:
         while self._running:
@@ -128,16 +128,16 @@ class JitterBuffer:
             except Empty:
                 continue
 
-            playout_at, seq, note_id, action, velocity = item
-            wait = playout_at - time.time()
+            playout_at, key, note_id, action, velocity = item
+            wait = playout_at - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
 
             # Discard if now too late
-            if time.time() - playout_at > 0.200:
+            if time.monotonic() - playout_at > 0.200:
                 continue
 
-            self._seen.add(seq)
+            self._seen.add(key)
             if len(self._seen) > 2000:
                 self._seen.clear()
 
