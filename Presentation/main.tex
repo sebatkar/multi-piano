@@ -96,7 +96,7 @@
     \node[box] (main) at (0,2.4) {\texttt{main.py}\\Bootstrap};
     \node[box] (ui) at (0,1.2) {\texttt{piano\_ui.py}\\Textual TUI};
     \node[box] (net) at (-2.6,0) {\texttt{network.py}\\Discovery, Sync \& Notes};
-    \node[box] (audio) at (2.6,0) {\texttt{audio.py}\\Playback \& Jitter};
+    \node[box] (audio) at (2.6,0) {\texttt{audio.py}\\Playback \& Scheduling};
     \node[box] (gen) at (0,-1.2) {\texttt{generate\_sounds.py}\\WAV Synthesis};
 
     \draw[arr] (main) -- (ui);
@@ -109,7 +109,7 @@
 
 \vspace{0.2cm}
 \begin{itemize}
-    \item \texttt{MultiPianoApp} owns \texttt{AudioEngine}, \texttt{NetworkManager}, and \texttt{JitterBuffer}.
+    \item \texttt{MultiPianoApp} owns \texttt{AudioEngine}, \texttt{NetworkManager}, and \texttt{NoteScheduler}.
     \item Network I/O runs on daemon threads; UI updates use \texttt{call\_from\_thread()}.
 \end{itemize}
 \end{frame}
@@ -195,7 +195,7 @@ Disconnect is detected via TCP EOF; the lobby list is updated and the UI is noti
 \end{itemize}
 \end{frame}
 
-\begin{frame}{Audio — Scheduled Playback \& Jitter Buffer}
+\begin{frame}{Audio — Scheduled Playback}
 \textbf{Local playback:}
 \begin{itemize}
     \item Key press schedules \texttt{play\_note} and broadcast after \textbf{30 ms} (\texttt{PLAYOUT\_DELAY}).
@@ -203,7 +203,7 @@ Disconnect is detected via TCP EOF; the lobby list is updated and the UI is noti
 \end{itemize}
 
 \vspace{0.3cm}
-\textbf{JitterBuffer} for remote notes:
+\textbf{NoteScheduler} for remote notes:
 \begin{itemize}
     \item Priority queue keyed by a \textbf{monotonic deadline} (immune to wall-clock steps).
     \item Waits until the sender-scheduled play time, then plays or stops the note.
