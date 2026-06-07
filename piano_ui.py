@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 from textual import events
 
-from audio import AudioEngine, JitterBuffer, PLAYOUT_DELAY
+from audio import AudioEngine, NoteScheduler, PLAYOUT_DELAY
 from network import NetworkManager
 
 # ── Key ↔ note mapping ──────────────────────────────────────────────────────
@@ -465,7 +465,7 @@ class MultiPianoApp(App):
         super().__init__()
         self.audio = AudioEngine(sounds_dir)
         self.network = NetworkManager(player_name='Player')
-        self.jitter = JitterBuffer(self.audio)
+        self.scheduler = NoteScheduler(self.audio)
 
     def on_mount(self) -> None:
         self.audio.init()
@@ -475,4 +475,4 @@ class MultiPianoApp(App):
     def on_unmount(self) -> None:
         self.audio.quit()
         self.network.stop()
-        self.jitter.stop()
+        self.scheduler.stop()

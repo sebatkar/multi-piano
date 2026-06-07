@@ -1,4 +1,4 @@
-"""Audio engine (pygame.mixer) and jitter buffer for remote note playback."""
+"""Audio engine (pygame.mixer) and scheduled playback queue for remote notes."""
 import os
 import time
 import threading
@@ -94,15 +94,15 @@ class AudioEngine:
                 pass
 
 
-class JitterBuffer:
-    """Priority-queue buffer that plays remote notes at their sender-scheduled time.
+class NoteScheduler:
+    """Priority queue that plays remote notes at their sender-scheduled time.
 
     The sender stamps each note with (local_time + PLAYOUT_DELAY). The receiver
     converts that timestamp to its own clock via the measured clock offset and
     waits until that moment to play. This keeps all players in sync without
     needing clock synchronisation to happen before the first note arrives —
     if the offset is still 0.0 (not yet measured) the note plays ~30 ms after
-    arrival, which is the same behaviour as the old fixed-delay buffer.
+    arrival, which is the same behaviour as a fixed-delay buffer.
     """
 
     def __init__(self, audio: AudioEngine):
