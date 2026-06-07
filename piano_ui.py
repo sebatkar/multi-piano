@@ -346,7 +346,7 @@ class PianoScreen(Screen):
     def _on_note_received(self, note_id: int, action: int, velocity: int,
                           seq: int, ts: float, sender_ip: str) -> None:
         app: MultiPianoApp = self.app  # type: ignore
-        app.jitter.push(seq, ts, note_id, action, velocity)
+        app.jitter.push(seq, ts, note_id, action, velocity, sender_ip)
         if action == 1:
             self.app.call_from_thread(self._flash_remote_key, note_id)
 
