@@ -1,0 +1,229 @@
+\documentclass[t]{beamer}
+
+% --- Theme and Color Setup ---
+\usetheme{Madrid}
+
+% Define the custom Orange color
+\definecolor{BogaziciBlue}{RGB}{29, 79, 144} 
+
+% Apply the orange color to the structure
+\usecolortheme[named=BogaziciBlue]{structure}
+
+% Fix footer colors to match the orange theme
+\setbeamercolor{palette primary}{bg=BogaziciBlue,fg=white}
+\setbeamercolor{palette secondary}{bg=BogaziciBlue!80!black,fg=white}
+\setbeamercolor{palette tertiary}{bg=BogaziciBlue!60!black,fg=white}
+\setbeamerfont{caption}{size=\footnotesize}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{tikz} 
+\usepackage{booktabs}
+\usepackage{natbib}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% --- 1. CONFIGURATION FOR CONTENT SLIDES (Middle Pages) ---
+\addtobeamertemplate{frametitle}{}{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node[anchor=north east, xshift=-0.3cm, yshift=0cm, inner sep=0pt] at (current page.north east) {
+            \includegraphics[height=1cm, keepaspectratio]{boun_white.png}
+        };
+    \end{tikzpicture}%
+}
+
+% --- 2. CONFIGURATION FOR FIRST & LAST PAGE ---
+\newcommand{\FirstLastPageLayout}{
+    \begin{tikzpicture}[remember picture,overlay]
+        \node[anchor=north east, xshift=-0.3cm, yshift=0cm, inner sep=0pt] at (current page.north east) {
+            \includegraphics[height=1cm, keepaspectratio]{boun.png}
+        };
+        \node[anchor=south west, xshift=0.5cm, yshift=0.5cm] at (current page.south west) {
+            \textcolor{BogaziciBlue}{\footnotesize Boğaziçi University}
+        };
+    \end{tikzpicture}
+}
+
+% --- Info ---
+\title[Multi-Piano]{Multi-Piano: LAN Multiplayer Terminal Piano}
+\subtitle{CMPE487}
+\author{Ömer Faruk Erzurumluoğlu \and Muhammet Berkay Keskin}
+\institute[]{Department of Computer Engineering}
+\date{June 2026}
+
+\begin{document}
+
+% --- Slide 1: Title Page ---
+\begin{frame}
+    \FirstLastPageLayout
+    \titlepage
+\end{frame}
+
+\begin{frame}{Sections}
+\begin{enumerate}
+    \item Project Overview
+    \item System Architecture
+    \item Networking
+    \item Audio Pipeline
+    \item User Interface
+    \item Deployment \& Future Work
+\end{enumerate}
+\end{frame}
+
+\begin{frame}{Project Overview}
+\textbf{Multi-Piano} is a LAN-based collaborative piano application with a terminal user interface (TUI).
+
+\vspace{0.4cm}
+\begin{itemize}
+    \item Multiple players on the same network discover, host, and join lobbies.
+    \item Notes are transmitted in near real time and played back with synchronized audio.
+    \item No external sound assets: piano tones are synthesized procedurally at build or first run.
+\end{itemize}
+
+\vspace{0.3cm}
+\textbf{Goal:} demonstrate a lightweight multiplayer prototype combining discovery, mixed protocols, jitter-buffered audio, and a full TUI.
+\end{frame}
+
+
+\begin{frame}{System Architecture}
+\begin{center}
+\begin{tikzpicture}[
+    box/.style={draw=BogaziciBlue, fill=BogaziciBlue!8, rounded corners, minimum width=2.6cm, minimum height=0.9cm, align=center, font=\footnotesize},
+    arr/.style={->, thick, BogaziciBlue}
+]
+    \node[box] (main) at (0,2.4) {\texttt{main.py}\\Bootstrap};
+    \node[box] (ui) at (0,1.2) {\texttt{piano\_ui.py}\\Textual TUI};
+    \node[box] (net) at (-2.6,0) {\texttt{network.py}\\Discovery \& Streaming};
+    \node[box] (audio) at (2.6,0) {\texttt{audio.py}\\Playback \& Jitter};
+    \node[box] (gen) at (0,-1.2) {\texttt{generate\_sounds.py}\\WAV Synthesis};
+
+    \draw[arr] (main) -- (ui);
+    \draw[arr] (ui) -- (net);
+    \draw[arr] (ui) -- (audio);
+    \draw[arr] (audio) -- (gen);
+\end{tikzpicture}
+\end{center}
+\end{frame}
+
+\begin{frame}{Networking — Three Channels}
+We separate concerns into three network channels:
+
+\vspace{0.3cm}
+\begin{table}
+\centering
+\small
+\begin{tabular}{clll}
+\toprule
+\textbf{Port} & \textbf{Protocol} & \textbf{Format} & \textbf{Role} \\
+\midrule
+12488 & UDP & JSON & Lobby discovery (broadcast) \\
+12487 & TCP & length-prefixed JSON & Lobby management \\
+12489 & UDP & 15-byte binary struct & Real-time note events \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.3cm}
+\begin{itemize}
+    \item \textbf{Discovery} finds open sessions without prior configuration.
+    \item \textbf{TCP} maintains player membership and state synchronization.
+    \item \textbf{UDP notes} minimize latency for press/release events.
+\end{itemize}
+\end{frame}
+
+
+\begin{frame}{Lobby Discovery (UDP 12488)}
+\textbf{Client behaviour:}
+\begin{itemize}
+    \item Binds UDP port 12488 with \texttt{SO\_BROADCAST} and \texttt{SO\_REUSEADDR}.
+    \item Sends \texttt{DISCOVER} broadcasts; listens for \texttt{LOBBY\_REPLY} responses.
+\end{itemize}
+
+\vspace{0.3cm}
+\textbf{Host behaviour:}
+\begin{itemize}
+    \item Replies to discoverers with lobby name, host IP, TCP port, and active player count.
+    \item Re-broadcasts \texttt{LOBBY\_REPLY} every 2 seconds.
+\end{itemize}
+
+\vspace{0.3cm}
+\textbf{Stale lobby eviction:} entries expire after 6 seconds without a reply (cleanup every 3 s).
+\end{frame}
+
+
+
+
+
+\begin{frame}{Lobby Management (TCP 12487)}
+
+\vspace{0.3cm}
+\textbf{Join flow:}
+\begin{enumerate}
+    \item Client connects to \texttt{(host\_ip, 12487)}.
+    \item Client sends \texttt{\{"type": "JOIN", "SENDER\_NAME": ..., "SENDER\_IP": ...\}}.
+    \item Host accepts, stores the socket, and appends the client IP to \texttt{peer\_ips}.
+    \item Host broadcasts \texttt{STATE\_UPDATE} with the current player list to all clients.
+\end{enumerate}
+
+\vspace{0.3cm}
+Disconnect is detected via TCP EOF; the lobby list is updated and the UI is notified.
+\end{frame}
+
+
+
+
+
+\begin{frame}{Audio — Playback \& Jitter Buffer}
+\textbf{AudioEngine} (pygame mixer):
+\begin{itemize}
+    \item 32 channels; per-note volume scaled by \texttt{velocity / 100 * 0.8}.
+    \item 200 ms fadeout on note release; watchdog stops notes held longer than 3 s.
+    \item Graceful fallback: app continues silently if mixer init fails.
+\end{itemize}
+
+\vspace{0.3cm}
+\textbf{JitterBuffer} for remote notes:
+\begin{itemize}
+    \item Fixed \textbf{30 ms playout delay} from packet timestamp.
+    \item Drops packets older than 500 ms on arrival.
+    \item Sequence-number deduplication handles UDP duplicates.
+\end{itemize}
+\end{frame}
+
+
+
+\begin{frame}{Limitations \& Future Work}
+\textbf{Current limitations:}
+\begin{itemize}
+    \item Hub topology: guests hear the host, but \textbf{not each other}.
+    \item LAN-only discovery; no Internet/WAN support or NAT traversal.
+    \item Fixed 500 ms auto-release approximates note-off rather than true key-up.
+    \item Single octave (13 keys); no sustain pedal or velocity from key pressure.
+\end{itemize}
+
+\vspace{0.3cm}
+\textbf{Possible extensions:}
+\begin{itemize}
+    \item Full-mesh or host-relay note forwarding for guest-to-guest audio.
+    \item Wider keyboard range, MIDI input, and configurable instrument sounds.
+\end{itemize}
+\end{frame}
+
+% --- Final page ---
+\begin{frame}[c]
+    \FirstLastPageLayout
+    \centering
+    \Huge \textcolor{BogaziciBlue}{Thank you for your attention}
+
+    \vspace{1.5cm}
+    \normalsize
+    \textbf{Ömer Faruk Erzurumluoğlu} \\
+    \textbf{Muhammet Berkay Keskin} \\
+    \vspace{0.3cm}
+    \href{mailto:omer.erzurumluoglu@std.bogazici.edu.tr}{omer.erzurumluoglu@std.bogazici.edu.tr}
+    {muhammet.keskin@std.bogazici.edu.tr}
+\end{frame}
+
+\end{document}
