@@ -95,11 +95,18 @@ class AudioEngine:
 
 
 class JitterBuffer:
-    """Priority-queue buffer that delays remote note events by PLAYOUT_DELAY."""
+    """Priority-queue buffer that plays remote notes at their sender-scheduled time.
 
-    def __init__(self, audio: AudioEngine, playout_delay: float = PLAYOUT_DELAY):
+    The sender stamps each note with (local_time + PLAYOUT_DELAY). The receiver
+    converts that timestamp to its own clock via the measured clock offset and
+    waits until that moment to play. This keeps all players in sync without
+    needing clock synchronisation to happen before the first note arrives —
+    if the offset is still 0.0 (not yet measured) the note plays ~30 ms after
+    arrival, which is the same behaviour as the old fixed-delay buffer.
+    """
+
+    def __init__(self, audio: AudioEngine):
         self._audio = audio
-        self._delay = playout_delay
         self._queue: PriorityQueue = PriorityQueue()
         self._seen: set[tuple[str, int]] = set()
         self._running = False
@@ -111,15 +118,25 @@ class JitterBuffer:
     def stop(self) -> None:
         self._running = False
 
-    def push(self, seq: int, _timestamp: float,
+    def push(self, seq: int, play_at: float,
              note_id: int, action: int, velocity: int,
              sender_id: str = '') -> None:
+        """Schedule a note for playback.
+
+        play_at is an absolute time.time()-based timestamp (already converted
+        to the local clock by the caller using the measured peer clock offset).
+        """
         key = (sender_id, seq)
         if key in self._seen:
-            return  # duplicate
-        # Remote wall clocks are not synchronized, so schedule from local arrival time.
-        playout_at = time.monotonic() + self._delay
-        self._queue.put((playout_at, key, note_id, action, velocity))
+            return
+        # Dedup here, not in the consumer, to prevent races with rapid duplicates.
+        self._seen.add(key)
+        if len(self._seen) > 2000:
+            self._seen.clear()
+        # Convert the wall-clock play_at to a monotonic deadline so the consumer
+        # is immune to NTP steps during playback.
+        play_at_mono = time.monotonic() + (play_at - time.time())
+        self._queue.put((play_at_mono, note_id, action, velocity))
 
     def _consumer(self) -> None:
         while self._running:
@@ -128,21 +145,16 @@ class JitterBuffer:
             except Empty:
                 continue
 
-            playout_at, key, note_id, action, velocity = item
-            wait = playout_at - time.monotonic()
+            play_at_mono, note_id, action, velocity = item
+            wait = play_at_mono - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
 
-            # Discard if now too late
-            if time.monotonic() - playout_at > 0.200:
+            # Discard if more than 200 ms overdue (e.g. thread was starved).
+            if time.monotonic() - play_at_mono > 0.200:
                 continue
-
-            self._seen.add(key)
-            if len(self._seen) > 2000:
-                self._seen.clear()
 
             if action == 1:
                 self._audio.play_note(note_id, velocity)
             else:
-                # Only release if the note is actually playing (press wasn't lost)
                 self._audio.stop_note(note_id)

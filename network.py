@@ -112,6 +112,11 @@ class NetworkManager:
         # host only: ip -> (socket, player_name)
         self._clients: dict[str, tuple[socket.socket, str]] = {}
 
+        # Clock synchronisation (NTP-style over UDP note port)
+        # offset = peer_clock - my_clock; convert peer timestamp → local: ts - offset
+        self._clock_offsets: dict[str, float] = {}
+        self._pending_syncs: dict[str, float] = {}   # peer_ip -> t1 sent
+
     # ------------------------------------------------------------------ #
     #  Lifecycle                                                           #
     # ------------------------------------------------------------------ #
@@ -267,6 +272,7 @@ class NetworkManager:
             self._broadcast_state()
             if self.on_state_update:
                 self.on_state_update(list(self.players))
+            self._start_sync_loop(ip)
 
             # Keep-alive: detect disconnect
             conn.settimeout(None)
@@ -323,6 +329,7 @@ class NetworkManager:
         })
 
         threading.Thread(target=self._client_recv_loop, daemon=True).start()
+        self._start_sync_loop(host_ip)
 
     def _client_recv_loop(self) -> None:
         while self._running:
@@ -356,29 +363,96 @@ class NetworkManager:
     def _note_recv_loop(self) -> None:
         while self._running:
             try:
-                data, addr = self._note_sock.recvfrom(NOTE_SIZE + 8)
+                data, addr = self._note_sock.recvfrom(2048)
                 sender_ip = addr[0]
                 if sender_ip == self.local_ip:
                     continue
-                if len(data) != NOTE_SIZE:
-                    continue
-                seq, ts, note_id, action, velocity = struct.unpack(NOTE_FORMAT, data)
-                if self.on_note_received:
-                    self.on_note_received(note_id, action, velocity, seq, ts, sender_ip)
+                if len(data) == NOTE_SIZE:
+                    seq, ts, note_id, action, velocity = struct.unpack(NOTE_FORMAT, data)
+                    if self.on_note_received:
+                        self.on_note_received(note_id, action, velocity, seq, ts, sender_ip)
+                else:
+                    try:
+                        msg = json.loads(data.decode())
+                        msg_type = msg.get('type')
+                        if msg_type == 'SYNC_REQ':
+                            self._handle_sync_req(msg, sender_ip)
+                        elif msg_type == 'SYNC_ACK':
+                            self._handle_sync_ack(msg, sender_ip)
+                    except Exception:
+                        pass
             except socket.timeout:
                 continue
             except Exception:
                 if not self._running:
                     break
 
-    def broadcast_note(self, note_id: int, action: int, velocity: int = 100) -> None:
+    # ------------------------------------------------------------------ #
+    #  Clock synchronisation (NTP-style, UDP)                             #
+    # ------------------------------------------------------------------ #
+
+    def get_clock_offset(self, peer_ip: str) -> float:
+        """Return measured offset: peer_clock - my_clock (0.0 until first sync)."""
+        return self._clock_offsets.get(peer_ip, 0.0)
+
+    def _start_sync_loop(self, peer_ip: str) -> None:
+        def _loop() -> None:
+            while self._running:
+                self._send_sync_req(peer_ip)
+                time.sleep(5.0)
+        threading.Thread(target=_loop, daemon=True).start()
+
+    def _send_sync_req(self, peer_ip: str) -> None:
+        t1 = time.time()
+        self._pending_syncs[peer_ip] = t1
+        msg = json.dumps({'type': 'SYNC_REQ', 't1': t1}).encode()
+        try:
+            self._note_sock.sendto(msg, (peer_ip, NOTE_PORT))
+        except Exception:
+            pass
+
+    def _handle_sync_req(self, msg: dict, sender_ip: str) -> None:
+        t2 = time.time()
+        t3 = time.time()
+        reply = json.dumps({
+            'type': 'SYNC_ACK',
+            't1': msg['t1'],
+            't2': t2,
+            't3': t3,
+        }).encode()
+        try:
+            self._note_sock.sendto(reply, (sender_ip, NOTE_PORT))
+        except Exception:
+            pass
+
+    def _handle_sync_ack(self, msg: dict, sender_ip: str) -> None:
+        t4 = time.time()
+        t1 = self._pending_syncs.get(sender_ip)
+        if t1 is None:
+            return
+        t2 = msg['t2']
+        t3 = msg['t3']
+        # offset = peer_clock - my_clock  (NTP formula)
+        self._clock_offsets[sender_ip] = ((t2 - t1) + (t3 - t4)) / 2
+
+    # ------------------------------------------------------------------ #
+    #  Note broadcasting                                                   #
+    # ------------------------------------------------------------------ #
+
+    def broadcast_note(self, note_id: int, action: int,
+                       play_at: float, velocity: int = 100) -> None:
+        """Send a note event to all peers.
+
+        play_at is the absolute time.time() timestamp at which the note should
+        be played (sender's local_time + PLAYOUT_DELAY). Receivers subtract
+        their measured clock offset to convert it to their own clock.
+        """
         if not self.peer_ips:
             return
         with self._seq_lock:
             seq = self._seq
             self._seq += 1
-        packet = struct.pack(NOTE_FORMAT, seq, time.time(),
-                             note_id, action, velocity)
+        packet = struct.pack(NOTE_FORMAT, seq, play_at, note_id, action, velocity)
         for ip in list(self.peer_ips):
             try:
                 self._note_sock.sendto(packet, (ip, NOTE_PORT))
