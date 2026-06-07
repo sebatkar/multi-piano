@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 from textual import events
 
-from audio import AudioEngine, JitterBuffer
+from audio import AudioEngine, JitterBuffer, PLAYOUT_DELAY
 from network import NetworkManager
 
 # ── Key ↔ note mapping ──────────────────────────────────────────────────────
@@ -359,7 +359,9 @@ class PianoScreen(Screen):
     def _on_note_received(self, note_id: int, action: int, velocity: int,
                           seq: int, ts: float, sender_ip: str) -> None:
         app: MultiPianoApp = self.app  # type: ignore
-        app.jitter.push(seq, ts, note_id, action, velocity, sender_ip)
+        offset = app.network.get_clock_offset(sender_ip)
+        local_play_at = ts - offset
+        app.jitter.push(seq, local_play_at, note_id, action, velocity, sender_ip)
         if action == 1:
             self.app.call_from_thread(self._flash_remote_key, note_id)
 
@@ -397,8 +399,11 @@ class PianoScreen(Screen):
             return
 
         app: MultiPianoApp = self.app  # type: ignore
-        app.audio.play_note(note_id, 100)
-        app.network.broadcast_note(note_id, 1, 100)
+        play_at = time.time() + PLAYOUT_DELAY
+        t_play = threading.Timer(PLAYOUT_DELAY, app.audio.play_note, args=[note_id, 100])
+        t_play.daemon = True
+        t_play.start()
+        app.network.broadcast_note(note_id, 1, play_at, 100)
 
         self._held_keys.add(note_id)
         self._refresh_piano()
@@ -413,8 +418,11 @@ class PianoScreen(Screen):
 
     def _auto_release(self, note_id: int) -> None:
         app: MultiPianoApp = self.app  # type: ignore
-        app.audio.stop_note(note_id)
-        app.network.broadcast_note(note_id, 0, 0)
+        play_at = time.time() + PLAYOUT_DELAY
+        t_stop = threading.Timer(PLAYOUT_DELAY, app.audio.stop_note, args=[note_id])
+        t_stop.daemon = True
+        t_stop.start()
+        app.network.broadcast_note(note_id, 0, play_at, 0)
         self.app.call_from_thread(self._release_key_ui, note_id)
 
     def _release_key_ui(self, note_id: int) -> None:
