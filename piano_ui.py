@@ -1,8 +1,6 @@
 """Textual TUI for Multi-Piano: lobby browser and piano screen."""
-import os
 import time
 import threading
-from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -333,7 +331,7 @@ class PianoScreen(Screen):
         app.network.on_state_update = self._on_state_update
         app.network.on_note_received = self._on_note_received
         app.network.on_disconnected = self._on_disconnected
-        app.jitter.start()
+        app.scheduler.start()
         # Initial render
         self._refresh_piano()
         # Show current players (host has them already)
@@ -361,7 +359,7 @@ class PianoScreen(Screen):
         app: MultiPianoApp = self.app  # type: ignore
         offset = app.network.get_clock_offset(sender_ip)
         local_play_at = ts - offset
-        app.jitter.push(seq, local_play_at, note_id, action, velocity, sender_ip)
+        app.scheduler.push(seq, local_play_at, note_id, action, velocity, sender_ip)
         if action == 1:
             self.app.call_from_thread(self._flash_remote_key, note_id)
 
@@ -435,7 +433,7 @@ class PianoScreen(Screen):
     def action_leave(self) -> None:
         app: MultiPianoApp = self.app  # type: ignore
         app.audio.stop_all()
-        app.jitter.stop()
+        app.scheduler.stop()
         app.network.stop()
         # Re-init network for a fresh lobby session
         app.network = NetworkManager(app.network.player_name)
